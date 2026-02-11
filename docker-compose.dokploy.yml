@@ -1,0 +1,120 @@
+version: "3.8"
+
+services:
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Server
+      - HOST=0.0.0.0
+      - PORT=9621
+      - WORKERS=2
+      
+      # OpenRouter LLM Config (OpenAI compatible)
+      - LLM_BINDING=openai
+      - LLM_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
+      - LLM_BINDING_HOST=https://openrouter.ai/api/v1
+      - OPENAI_API_KEY=${OPENROUTER_API_KEY}
+      # Дополнительные заголовки для OpenRouter (опционально)
+      - OPENAI_HEADERS={"HTTP-Referer":"https://rag.notes.my-cdn.host","X-Title":"LightRAG"}
+      
+      # OpenRouter Embeddings Config
+      - EMBEDDING_BINDING=openai
+      - EMBEDDING_MODEL=qwen/qwen3-embedding-8b
+      - EMBEDDING_DIM=4096  # Важно: Qwen3-8B = 4096 dimensions
+      - EMBEDDING_BINDING_HOST=https://openrouter.ai/api/v1
+      
+      # Storage (PostgreSQL - поддерживает 4096 dim)
+      - LIGHTRAG_KV_STORAGE=PGKVStorage
+      - LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
+      - LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+      - LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
+      
+      # PostgreSQL
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-lightrag}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DATABASE=${POSTGRES_DATABASE:-lightrag}
+      - POSTGRES_MAX_CONNECTIONS=12
+      
+      # Redis Cache (ускоряет повторные запросы)
+      - REDIS_URI=redis://redis:6379
+      
+      # Performance (снижаем нагрузку на free tier)
+      - MAX_ASYNC=2
+      - MAX_PARALLEL_INSERT=1
+      - MAX_TOKENS=4096
+      - ENABLE_LLM_CACHE=true
+      
+      # Security
+      - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY}
+      - TOKEN_SECRET=${TOKEN_SECRET:-$(openssl rand -hex 32)}
+      
+      # Working Dirs
+      - WORKING_DIR=/app/data/rag_storage
+      - INPUT_DIR=/app/data/inputs
+    volumes:
+      - lightrag-storage:/app/data/rag_storage
+      - lightrag-inputs:/app/data/inputs
+    networks:
+      - dokploy-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lightrag.rule=Host(`rag.notes.my-cdn.host`)"
+      - "traefik.http.routers.lightrag.entrypoints=websecure"
+      - "traefik.http.routers.lightrag.tls.certResolver=letsencrypt"
+      - "traefik.http.services.lightrag.loadbalancer.server.port=9621"
+
+  postgres:
+    image: ankane/pgvector:latest  # pgvector поддерживает 4096 dimensions
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-lightrag}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DATABASE:-lightrag}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - dokploy-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightrag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres 
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - dokploy-network
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  lightrag-storage:
+  lightrag-inputs:
+  postgres-data:
+  redis-data:
+
+networks:
+  dokploy-network:
+    external: true
