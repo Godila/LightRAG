@@ -1,6 +1,7 @@
 version: "3.8"
 
 services:
+  # 🧠 LightRAG API + WebUI
   lightrag:
     image: ghcr.io/hkuds/lightrag:latest
     build:
@@ -13,38 +14,48 @@ services:
       - PORT=9621
       - WORKERS=2
       
-      # OpenRouter LLM Config (OpenAI compatible)
+      # OpenRouter LLM (Nemotron)
       - LLM_BINDING=openai
       - LLM_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
       - LLM_BINDING_HOST=https://openrouter.ai/api/v1
       - OPENAI_API_KEY=${OPENROUTER_API_KEY}
-      # Дополнительные заголовки для OpenRouter (опционально)
-      - OPENAI_HEADERS={"HTTP-Referer":"https://rag.notes.my-cdn.host","X-Title":"LightRAG"}
       
-      # OpenRouter Embeddings Config
+      # OpenRouter Embeddings (BGE-M3 = 1024 dim)
       - EMBEDDING_BINDING=openai
-      - EMBEDDING_MODEL=qwen/qwen3-embedding-8b
-      - EMBEDDING_DIM=4096  # Важно: Qwen3-8B = 4096 dimensions
+      - EMBEDDING_MODEL=BAAI/bge-m3
+      - EMBEDDING_DIM=1024
       - EMBEDDING_BINDING_HOST=https://openrouter.ai/api/v1
       
-      # Storage (PostgreSQL - поддерживает 4096 dim)
-      - LIGHTRAG_KV_STORAGE=PGKVStorage
-      - LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
-      - LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+      # Storage Configuration
+      - LIGHTRAG_KV_STORAGE=RedisKVStorage
+      - LIGHTRAG_VECTOR_STORAGE=QdrantVectorDBStorage
+      - LIGHTRAG_GRAPH_STORAGE=Neo4JStorage
       - LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
       
-      # PostgreSQL
+      # Redis Configuration (KV Storage)
+      - REDIS_URI=redis://redis:6379
+      
+      # Qdrant Configuration (Vector Storage)
+      - QDRANT_URL=http://qdrant:6333
+      # Опционально: QDRANT_API_KEY если включишь auth в Qdrant
+      
+      # Neo4j Configuration (Graph Storage)
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_DATABASE=neo4j
+      # Дополнительные настройки соединения Neo4j
+      - NEO4J_MAX_CONNECTION_POOL_SIZE=50
+      - NEO4J_CONNECTION_TIMEOUT=30
+      
+      # PostgreSQL Configuration (Doc Status Storage)
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=${POSTGRES_USER:-lightrag}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DATABASE=${POSTGRES_DATABASE:-lightrag}
-      - POSTGRES_MAX_CONNECTIONS=12
       
-      # Redis Cache (ускоряет повторные запросы)
-      - REDIS_URI=redis://redis:6379
-      
-      # Performance (снижаем нагрузку на free tier)
+      # Performance
       - MAX_ASYNC=2
       - MAX_PARALLEL_INSERT=1
       - MAX_TOKENS=4096
@@ -52,9 +63,9 @@ services:
       
       # Security
       - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY}
-      - TOKEN_SECRET=${TOKEN_SECRET:-$(openssl rand -hex 32)}
+      - TOKEN_SECRET=${TOKEN_SECRET}
       
-      # Working Dirs
+      # Working Dirs (для кэшей и временных файлов)
       - WORKING_DIR=/app/data/rag_storage
       - INPUT_DIR=/app/data/inputs
     volumes:
@@ -63,9 +74,13 @@ services:
     networks:
       - dokploy-network
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     labels:
       - "traefik.enable=true"
@@ -74,8 +89,69 @@ services:
       - "traefik.http.routers.lightrag.tls.certResolver=letsencrypt"
       - "traefik.http.services.lightrag.loadbalancer.server.port=9621"
 
+  # ⚡ Redis (KV Storage)
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - dokploy-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 🕸️ Neo4j (Graph Storage)
+  neo4j:
+    image: neo4j:5-enterprise
+    restart: unless-stopped
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+      - NEO4J_PLUGINS=["apoc", "gds"]  # Полезные плагины для графовой аналитики
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=2G
+    ports:
+      # Публикация портов опциональна (для отладки через Neo4j Browser)
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    networks:
+      - dokploy-network
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD}", "MATCH (n) RETURN count(n) LIMIT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # 🔍 Qdrant (Vector Storage)
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      # Опционально: включить аутентификацию
+      # - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    networks:
+      - dokploy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 🐘 PostgreSQL (Doc Status Storage)
   postgres:
-    image: ankane/pgvector:latest  # pgvector поддерживает 4096 dimensions
+    image: ankane/pgvector:latest
     restart: unless-stopped
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-lightrag}
@@ -90,30 +166,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    command: >
-      postgres 
-      -c max_connections=200
-      -c shared_buffers=256MB
-      -c effective_cache_size=768MB
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    networks:
-      - dokploy-network
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
 
 volumes:
   lightrag-storage:
   lightrag-inputs:
-  postgres-data:
   redis-data:
+  neo4j-data:
+  neo4j-logs:
+  qdrant-storage:
+  postgres-data:
 
 networks:
   dokploy-network:
