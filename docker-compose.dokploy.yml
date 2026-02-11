@@ -1,7 +1,6 @@
 version: "3.8"
 
 services:
-  # 🧠 LightRAG API + WebUI
   lightrag:
     image: ghcr.io/hkuds/lightrag:latest
     build:
@@ -9,59 +8,48 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      # Server
       - HOST=0.0.0.0
       - PORT=9621
       - WORKERS=2
       
-      # OpenRouter LLM (Nemotron)
       - LLM_BINDING=openai
       - LLM_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
       - LLM_BINDING_HOST=https://openrouter.ai/api/v1
       - OPENAI_API_KEY=${OPENROUTER_API_KEY}
       
-      # OpenRouter Embeddings (BGE-M3 = 1024 dim)
       - EMBEDDING_BINDING=openai
       - EMBEDDING_MODEL=BAAI/bge-m3
       - EMBEDDING_DIM=1024
       - EMBEDDING_BINDING_HOST=https://openrouter.ai/api/v1
       
-      # Storage Configuration
       - LIGHTRAG_KV_STORAGE=RedisKVStorage
       - LIGHTRAG_VECTOR_STORAGE=QdrantVectorDBStorage
       - LIGHTRAG_GRAPH_STORAGE=Neo4JStorage
       - LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
       
-      # Redis Configuration
       - REDIS_URI=redis://redis:6379
       
-      # Qdrant Configuration
       - QDRANT_URL=http://qdrant:6333
       
-      # Neo4j Configuration
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USERNAME=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD}
       - NEO4J_DATABASE=neo4j
       
-      # PostgreSQL Configuration
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:-lightrag}
+      - POSTGRES_USER=lightrag
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DATABASE=${POSTGRES_DATABASE:-lightrag}
+      - POSTGRES_DATABASE=lightrag
       
-      # Performance (Rate limits OpenRouter)
       - MAX_ASYNC=2
       - MAX_PARALLEL_INSERT=1
       - MAX_TOKENS=4096
       - ENABLE_LLM_CACHE=true
       
-      # Security
       - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY}
       - TOKEN_SECRET=${TOKEN_SECRET}
       
-      # Working Dirs
       - WORKING_DIR=/app/data/rag_storage
       - INPUT_DIR=/app/data/inputs
     volumes:
@@ -85,7 +73,6 @@ services:
       - "traefik.http.routers.lightrag.tls.certResolver=letsencrypt"
       - "traefik.http.services.lightrag.loadbalancer.server.port=9621"
 
-  # ⚡ Redis (KV Storage)
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -100,7 +87,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # 🕸️ Neo4j Community (Graph Storage)
   neo4j:
     image: neo4j:5-community
     restart: unless-stopped
@@ -121,7 +107,6 @@ services:
       retries: 15
       start_period: 60s
 
-  # 🔍 Qdrant (Vector Storage)
   qdrant:
     image: qdrant/qdrant:latest
     restart: unless-stopped
@@ -132,26 +117,25 @@ services:
     networks:
       - dokploy-network
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"]
       interval: 5s
       timeout: 3s
-      retries: 10
-      start_period: 15s
+      retries: 15
+      start_period: 30s
 
-  # 🐘 PostgreSQL (Doc Status Storage)
   postgres:
     image: ankane/pgvector:latest
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-lightrag}
+      - POSTGRES_USER=lightrag
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DATABASE:-lightrag}
+      - POSTGRES_DB=lightrag
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
       - dokploy-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightrag}"]
+      test: ["CMD-SHELL", "pg_isready -U lightrag -d lightrag"]
       interval: 5s
       timeout: 5s
       retries: 5
