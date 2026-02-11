@@ -32,30 +32,26 @@ services:
       - LIGHTRAG_GRAPH_STORAGE=Neo4JStorage
       - LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
       
-      # Redis Configuration (KV Storage)
+      # Redis Configuration
       - REDIS_URI=redis://redis:6379
       
-      # Qdrant Configuration (Vector Storage)
+      # Qdrant Configuration
       - QDRANT_URL=http://qdrant:6333
-      # Опционально: QDRANT_API_KEY если включишь auth в Qdrant
       
-      # Neo4j Configuration (Graph Storage)
+      # Neo4j Configuration
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USERNAME=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD}
       - NEO4J_DATABASE=neo4j
-      # Дополнительные настройки соединения Neo4j
-      - NEO4J_MAX_CONNECTION_POOL_SIZE=50
-      - NEO4J_CONNECTION_TIMEOUT=30
       
-      # PostgreSQL Configuration (Doc Status Storage)
+      # PostgreSQL Configuration
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=${POSTGRES_USER:-lightrag}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DATABASE=${POSTGRES_DATABASE:-lightrag}
       
-      # Performance
+      # Performance (Rate limits OpenRouter)
       - MAX_ASYNC=2
       - MAX_PARALLEL_INSERT=1
       - MAX_TOKENS=4096
@@ -65,7 +61,7 @@ services:
       - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY}
       - TOKEN_SECRET=${TOKEN_SECRET}
       
-      # Working Dirs (для кэшей и временных файлов)
+      # Working Dirs
       - WORKING_DIR=/app/data/rag_storage
       - INPUT_DIR=/app/data/inputs
     volumes:
@@ -84,7 +80,7 @@ services:
         condition: service_healthy
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.lightrag.rule=Host(`rag.notes.my-cdn.host`)"
+      - "traefik.http.routers.lightrag.rule=Host(`${DOMAIN:-rag.notes.my-cdn.host}`)"
       - "traefik.http.routers.lightrag.entrypoints=websecure"
       - "traefik.http.routers.lightrag.tls.certResolver=letsencrypt"
       - "traefik.http.services.lightrag.loadbalancer.server.port=9621"
@@ -104,31 +100,26 @@ services:
       timeout: 3s
       retries: 5
 
-  # 🕸️ Neo4j (Graph Storage)
+  # 🕸️ Neo4j Community (Graph Storage)
   neo4j:
-    image: neo4j:5-community  # <-- Изменено с enterprise
+    image: neo4j:5-community
     restart: unless-stopped
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
-      # Убрано: NEO4J_ACCEPT_LICENSE_AGREEMENT (не нужно для community)
-      # Убраны плагины GDS (только для Enterprise)
-      - NEO4J_PLUGINS=["apoc"]  # APOC Core доступен в Community
+      - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_memory_heap_initial__size=512m
       - NEO4J_dbms_memory_heap_max__size=2G
-    ports:
-      - "7474:7474"
-      - "7687:7687"
     volumes:
       - neo4j-data:/data
       - neo4j-logs:/logs
     networks:
       - dokploy-network
     healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 30s
+      retries: 15
+      start_period: 60s
 
   # 🔍 Qdrant (Vector Storage)
   qdrant:
@@ -136,18 +127,16 @@ services:
     restart: unless-stopped
     environment:
       - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__SERVICE__GRPC_PORT=6334
-      # Опционально: включить аутентификацию
-      # - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
     volumes:
       - qdrant-storage:/qdrant/storage
     networks:
       - dokploy-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:6333/healthz || exit 1"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
+      start_period: 15s
 
   # 🐘 PostgreSQL (Doc Status Storage)
   postgres:
