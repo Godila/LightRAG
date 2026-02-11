@@ -66,12 +66,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.lightrag.rule=Host(`${DOMAIN:-rag.notes.my-cdn.host}`)"
-      - "traefik.http.routers.lightrag.entrypoints=websecure"
-      - "traefik.http.routers.lightrag.tls.certResolver=letsencrypt"
-      - "traefik.http.services.lightrag.loadbalancer.server.port=9621"
 
   redis:
     image: redis:7-alpine
